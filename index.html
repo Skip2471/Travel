@@ -197,7 +197,6 @@
       return {
         id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()),
         city:data.city||'',
-        expectedArrival:data.expectedArrival||'',
         breakMinutes:data.breakMinutes ?? 30,
         overrideEnabled:data.overrideEnabled||false,
         overrideStart:data.overrideStart||'',
@@ -251,9 +250,7 @@
       rows.push({city:$('startCity').value.trim()||'Starting city',arrival:startDate,breakMinutes:0,departure:startDate,nextDrive:firstDrive,miles:parseFloat($('firstMiles').value)||0});
 
       stops.forEach((stop,index)=>{
-        let calculatedArrival=currentDeparture ? addMinutes(currentDeparture,index===0?firstDrive:hoursToMinutes(stops[index-1].driveHours)) : null;
-        let arrival=stop.expectedArrival ? new Date(stop.expectedArrival) : calculatedArrival;
-        if(arrival && isNaN(arrival)) arrival=calculatedArrival;
+        const arrival=currentDeparture ? addMinutes(currentDeparture,index===0?firstDrive:hoursToMinutes(stops[index-1].driveHours)) : null;
         const breakMins=Math.max(0,parseInt(stop.breakMinutes)||0);
         let departure=arrival ? addMinutes(arrival,breakMins) : null;
         if(stop.overrideEnabled && stop.overrideStart){
@@ -294,8 +291,8 @@
             </div>
             <div class="field wide">
               <label>Expected arrival time</label>
-              <input type="datetime-local" data-id="${stop.id}" data-key="expectedArrival" value="${stop.expectedArrival}" />
-              <div class="help">Leave blank to calculate automatically from the previous departure and drive time.</div>
+              <div class="computed" id="arrival-${stop.id}">—</div>
+              <div class="help">Automatically calculated from the previous city’s departure time plus this leg’s drive time.</div>
             </div>
             <div class="field">
               <label>Break time in minutes</label>
@@ -339,10 +336,12 @@
       $('routeSummary').innerHTML=cities.length?cities.map(escapeHtml).join('<span class="arrow">→</span>'):'Enter your starting city and add stops below.';
 
       result.rows.slice(1).forEach((row,i)=>{
-        const el=$(`computed-${stops[i].id}`);
-        if(el){
-          el.textContent=formatDateTime(row.departure);
-          el.classList.toggle('changed',!!stops[i].overrideEnabled);
+        const arrivalEl=$(`arrival-${stops[i].id}`);
+        if(arrivalEl) arrivalEl.textContent=formatDateTime(row.arrival);
+        const departureEl=$(`computed-${stops[i].id}`);
+        if(departureEl){
+          departureEl.textContent=formatDateTime(row.departure);
+          departureEl.classList.toggle('changed',!!stops[i].overrideEnabled);
         }
       });
 
