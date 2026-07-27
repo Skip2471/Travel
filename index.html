@@ -200,6 +200,8 @@
         breakMinutes:data.breakMinutes ?? 30,
         overrideEnabled:data.overrideEnabled||false,
         overrideStart:data.overrideStart||'',
+        dateOverrideEnabled:data.dateOverrideEnabled||false,
+        travelDate:data.travelDate||'',
         miles:data.miles||'',
         driveHours:data.driveHours||''
       };
@@ -250,7 +252,13 @@
       rows.push({city:$('startCity').value.trim()||'Starting city',arrival:startDate,breakMinutes:0,departure:startDate,nextDrive:firstDrive,miles:parseFloat($('firstMiles').value)||0});
 
       stops.forEach((stop,index)=>{
-        const arrival=currentDeparture ? addMinutes(currentDeparture,index===0?firstDrive:hoursToMinutes(stops[index-1].driveHours)) : null;
+        let arrival=currentDeparture ? addMinutes(currentDeparture,index===0?firstDrive:hoursToMinutes(stops[index-1].driveHours)) : null;
+        if(arrival && stop.dateOverrideEnabled && stop.travelDate){
+          const [year,month,day]=stop.travelDate.split('-').map(Number);
+          if(year && month && day){
+            arrival=new Date(year,month-1,day,arrival.getHours(),arrival.getMinutes(),0,0);
+          }
+        }
         const breakMins=Math.max(0,parseInt(stop.breakMinutes)||0);
         let departure=arrival ? addMinutes(arrival,breakMins) : null;
         if(stop.overrideEnabled && stop.overrideStart){
@@ -262,7 +270,7 @@
         const nextDrive=hoursToMinutes(stop.driveHours);
         totalDrive+=nextDrive;
         totalMiles+=parseFloat(stop.miles)||0;
-        rows.push({city:stop.city.trim()||`City ${index+1}`,arrival,calculatedArrival,breakMinutes:breakMins,departure,nextDrive,miles:parseFloat(stop.miles)||0,override:stop.overrideEnabled});
+        rows.push({city:stop.city.trim()||`City ${index+1}`,arrival,breakMinutes:breakMins,departure,nextDrive,miles:parseFloat(stop.miles)||0,override:stop.overrideEnabled});
       });
 
       let finalArrival=startDate;
@@ -293,6 +301,22 @@
               <label>Expected arrival time</label>
               <div class="computed" id="arrival-${stop.id}">—</div>
               <div class="help">Automatically calculated from the previous city’s departure time plus this leg’s drive time.</div>
+            </div>
+            <div class="field wide">
+              <label>Travel date</label>
+              <div class="computed" id="date-${stop.id}">—</div>
+              <div class="help">Uses the prior travel date automatically, including a new date when the trip crosses midnight.</div>
+            </div>
+            <div class="field wide">
+              <label>Date override</label>
+              <div class="override-row">
+                <input type="checkbox" data-id="${stop.id}" data-key="dateOverrideEnabled" ${stop.dateOverrideEnabled?'checked':''} />
+                <span>Choose a different travel date for this city</span>
+              </div>
+            </div>
+            <div class="field wide date-override-input" style="display:${stop.dateOverrideEnabled?'block':'none'}">
+              <label>Override travel date</label>
+              <input type="date" data-id="${stop.id}" data-key="travelDate" value="${stop.travelDate}" />
             </div>
             <div class="field">
               <label>Break time in minutes</label>
@@ -338,6 +362,8 @@
       result.rows.slice(1).forEach((row,i)=>{
         const arrivalEl=$(`arrival-${stops[i].id}`);
         if(arrivalEl) arrivalEl.textContent=formatDateTime(row.arrival);
+        const dateEl=$(`date-${stops[i].id}`);
+        if(dateEl) dateEl.textContent=row.arrival ? row.arrival.toLocaleDateString([], {weekday:'short',month:'short',day:'numeric',year:'numeric'}) : '—';
         const departureEl=$(`computed-${stops[i].id}`);
         if(departureEl){
           departureEl.textContent=formatDateTime(row.departure);
@@ -403,7 +429,7 @@
       if(id&&key){
         const s=stops.find(x=>x.id===id);
         if(s){s[key]=e.target.type==='checkbox'?e.target.checked:e.target.value;}
-        if(key==='overrideEnabled') renderStops(); else updateAll();
+        if(key==='overrideEnabled' || key==='dateOverrideEnabled') renderStops(); else updateAll();
       } else updateAll();
     });
     document.addEventListener('click',e=>{
