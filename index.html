@@ -147,6 +147,14 @@
           <input id="startTime" type="time" />
         </div>
         <div class="field">
+          <label for="startTimezone">Starting time zone</label>
+          <select id="startTimezone">
+            <option value="EST">EST</option>
+            <option value="CST">CST</option>
+          </select>
+          <div class="help">Fixed standard time only; daylight saving time is ignored.</div>
+        </div>
+        <div class="field">
           <label for="firstMiles">Miles to first city</label>
           <input id="firstMiles" type="number" min="0" step="1" placeholder="0" />
         </div>
@@ -177,12 +185,12 @@
       <div class="schedule-wrap">
         <table class="schedule-table">
           <thead>
-            <tr><th>City</th><th>Arrive</th><th>Break</th><th>Depart</th><th>Next Leg</th><th>Miles</th></tr>
+            <tr><th>City</th><th>Time Zone</th><th>Arrive</th><th>Break</th><th>Depart</th><th>Next Leg</th><th>Miles</th></tr>
           </thead>
           <tbody id="scheduleBody"></tbody>
         </table>
       </div>
-      <div class="notice">Times are planning estimates. Start-time overrides are useful when crossing a time zone, taking a longer stop, or leaving earlier or later than originally planned.</div>
+      <div class="notice">Times use fixed EST and CST offsets and intentionally ignore daylight saving time. Selecting a different destination time zone automatically changes the displayed arrival and calculated departure time; manual start-time overrides remain available for schedule adjustments.</div>
       <div class="footer-actions">
         <button class="success" id="emailBtn">Email Schedule</button>
         <button class="secondary" id="printBtn">Print Schedule</button>
@@ -204,28 +212,48 @@
         overrideStart:data.overrideStart||'',
         dateOverrideEnabled:data.dateOverrideEnabled||false,
         travelDate:data.travelDate||'',
+        timezone:data.timezone||'',
         miles:data.miles||'',
         driveHours:data.driveHours||''
       };
     }
 
-    function dateFromInputs(dateStr,timeStr){
+    const ZONE_OFFSETS={EST:-300,CST:-360};
+    function zoneOffset(zone){ return ZONE_OFFSETS[zone] ?? ZONE_OFFSETS.EST; }
+    function wallDateTime(dateStr,timeStr,zone){
       if(!dateStr || !timeStr) return null;
-      const d=new Date(`${dateStr}T${timeStr}:00`);
-      return isNaN(d)?null:d;
+      const [y,m,d]=dateStr.split('-').map(Number);
+      const [hh,mm]=timeStr.split(':').map(Number);
+      if(!y||!m||!d||!Number.isFinite(hh)||!Number.isFinite(mm)) return null;
+      return Date.UTC(y,m-1,d,hh,mm)-zoneOffset(zone)*60000;
     }
-    function addMinutes(date,mins){ return new Date(date.getTime()+mins*60000); }
+    function wallDateTimeLocal(value,zone){
+      if(!value) return null;
+      const [date,time]=value.split('T');
+      return wallDateTime(date,time,zone);
+    }
+    function addMinutes(value,mins){ return value==null?null:value+mins*60000; }
     function hoursToMinutes(value){
       const n=parseFloat(value);
       return Number.isFinite(n)?Math.round(n*60):0;
     }
-    function formatDateTime(d){
-      if(!d) return '—';
-      return d.toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+    function wallParts(value,zone){
+      if(value==null) return null;
+      const d=new Date(value+zoneOffset(zone)*60000);
+      return {year:d.getUTCFullYear(),month:d.getUTCMonth()+1,day:d.getUTCDate(),hour:d.getUTCHours(),minute:d.getUTCMinutes(),weekday:d.getUTCDay()};
     }
-    function formatTime(d){
-      if(!d) return '—';
-      return d.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+    function formatDateTime(value,zone='EST'){
+      const p=wallParts(value,zone); if(!p) return '—';
+      const weekdays=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const hour12=p.hour%12||12, ampm=p.hour<12?'AM':'PM';
+      return `${weekdays[p.weekday]}, ${months[p.month-1]} ${p.day}, ${hour12}:${String(p.minute).padStart(2,'0')} ${ampm} ${zone}`;
+    }
+    function formatDateOnly(value,zone='EST'){
+      const p=wallParts(value,zone); if(!p) return '—';
+      const weekdays=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return `${weekdays[p.weekday]}, ${months[p.month-1]} ${p.day}, ${p.year}`;
     }
     function durationText(mins){
       mins=Math.max(0,Math.round(mins||0));
@@ -236,52 +264,45 @@
       parts.push(`${rem} min`);
       return parts.join(' ');
     }
-    function inputDateTimeValue(d){
-      if(!d)return '';
-      const pad=n=>String(n).padStart(2,'0');
-      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
-
     function calculate(){
-      const startDate=dateFromInputs($('tripDate').value,$('startTime').value);
+      const startZone=$('startTimezone').value||'EST';
+      const startDate=wallDateTime($('tripDate').value,$('startTime').value,startZone);
       const firstDrive=hoursToMinutes($('firstDriveHours').value);
       let currentDeparture=startDate;
+      let currentZone=startZone;
       let totalDrive=firstDrive;
       let totalBreak=0;
       let totalMiles=parseFloat($('firstMiles').value)||0;
       const rows=[];
 
-      rows.push({city:$('startCity').value.trim()||'Starting city',arrival:startDate,breakMinutes:0,departure:startDate,nextDrive:firstDrive,miles:parseFloat($('firstMiles').value)||0});
+      rows.push({city:$('startCity').value.trim()||'Starting city',arrival:startDate,breakMinutes:0,departure:startDate,nextDrive:firstDrive,miles:parseFloat($('firstMiles').value)||0,zone:startZone});
 
       stops.forEach((stop,index)=>{
-        let arrival=currentDeparture ? addMinutes(currentDeparture,index===0?firstDrive:hoursToMinutes(stops[index-1].driveHours)) : null;
-        if(arrival && stop.dateOverrideEnabled && stop.travelDate){
+        const destinationZone=stop.timezone||currentZone;
+        let arrival=currentDeparture!=null ? addMinutes(currentDeparture,index===0?firstDrive:hoursToMinutes(stops[index-1].driveHours)) : null;
+        if(arrival!=null && stop.dateOverrideEnabled && stop.travelDate){
+          const p=wallParts(arrival,destinationZone);
           const [year,month,day]=stop.travelDate.split('-').map(Number);
-          if(year && month && day){
-            arrival=new Date(year,month-1,day,arrival.getHours(),arrival.getMinutes(),0,0);
-          }
+          if(year&&month&&day&&p){ arrival=Date.UTC(year,month-1,day,p.hour,p.minute)-zoneOffset(destinationZone)*60000; }
         }
         const breakMins=Math.max(0,parseInt(stop.breakMinutes)||0);
-        let departure=arrival ? addMinutes(arrival,breakMins) : null;
+        let departure=arrival!=null ? addMinutes(arrival,breakMins) : null;
         if(stop.overrideEnabled && stop.overrideStart){
-          const override=new Date(stop.overrideStart);
-          if(!isNaN(override)) departure=override;
+          const override=wallDateTimeLocal(stop.overrideStart,destinationZone);
+          if(override!=null) departure=override;
         }
         currentDeparture=departure;
+        currentZone=destinationZone;
         totalBreak+=breakMins;
         const nextDrive=hoursToMinutes(stop.driveHours);
         totalDrive+=nextDrive;
         totalMiles+=parseFloat(stop.miles)||0;
-        rows.push({city:stop.city.trim()||`City ${index+1}`,arrival,breakMinutes:breakMins,departure,nextDrive,miles:parseFloat(stop.miles)||0,override:stop.overrideEnabled});
+        rows.push({city:stop.city.trim()||`City ${index+1}`,arrival,breakMinutes:breakMins,departure,nextDrive,miles:parseFloat(stop.miles)||0,override:stop.overrideEnabled,zone:destinationZone});
       });
 
-      let finalArrival=startDate;
-      if(stops.length){
-        const last=rows[rows.length-1];
-        finalArrival=last.arrival;
-      }
-      const totalTravel=(startDate&&finalArrival)?Math.round((finalArrival-startDate)/60000):totalDrive+totalBreak;
-      return {startDate,rows,totalDrive,totalBreak,totalMiles,totalTravel,finalArrival};
+      const finalArrival=stops.length?rows[rows.length-1].arrival:startDate;
+      const totalTravel=(startDate!=null&&finalArrival!=null)?Math.round((finalArrival-startDate)/60000):totalDrive+totalBreak;
+      return {startDate,startZone,rows,totalDrive,totalBreak,totalMiles,totalTravel,finalArrival};
     }
 
     function renderStops(){
@@ -298,6 +319,19 @@
             <div class="field wide">
               <label>City</label>
               <input type="text" data-id="${stop.id}" data-key="city" value="${escapeHtml(stop.city)}" placeholder="Example: Nashville, TN" />
+            </div>
+            <div class="field">
+              <label>Time zone</label>
+              <select data-id="${stop.id}" data-key="timezone">
+                <option value="" ${!stop.timezone?'selected':''}>Same as previous</option>
+                <option value="EST" ${stop.timezone==='EST'?'selected':''}>EST</option>
+                <option value="CST" ${stop.timezone==='CST'?'selected':''}>CST</option>
+              </select>
+              <div class="help">A selected zone carries forward to later cities unless they override it.</div>
+            </div>
+            <div class="field">
+              <label>Effective time zone</label>
+              <div class="computed" id="zone-${stop.id}">—</div>
             </div>
             <div class="field wide">
               <label>Expected arrival time</label>
@@ -363,27 +397,29 @@
 
       result.rows.slice(1).forEach((row,i)=>{
         const arrivalEl=$(`arrival-${stops[i].id}`);
-        if(arrivalEl) arrivalEl.textContent=formatDateTime(row.arrival);
+        if(arrivalEl) arrivalEl.textContent=formatDateTime(row.arrival,row.zone);
         const dateEl=$(`date-${stops[i].id}`);
-        if(dateEl) dateEl.textContent=row.arrival ? row.arrival.toLocaleDateString([], {weekday:'short',month:'short',day:'numeric',year:'numeric'}) : '—';
+        if(dateEl) dateEl.textContent=formatDateOnly(row.arrival,row.zone);
         const departureEl=$(`computed-${stops[i].id}`);
         if(departureEl){
-          departureEl.textContent=formatDateTime(row.departure);
-          departureEl.classList.toggle('changed',!!stops[i].overrideEnabled);
+          departureEl.textContent=formatDateTime(row.departure,row.zone);
+          departureEl.classList.toggle('changed',!!stops[i].overrideEnabled || (i===0 ? row.zone!==result.startZone : row.zone!==result.rows[i].zone));
+          const zoneEl=$(`zone-${stops[i].id}`); if(zoneEl) zoneEl.textContent=row.zone;
         }
       });
 
       $('totalDriveTime').textContent=durationText(result.totalDrive);
       $('totalTravelTime').textContent=durationText(result.totalTravel);
       $('totalMiles').textContent=`${Math.round(result.totalMiles).toLocaleString()} miles`;
-      $('scheduleWindow').textContent=result.startDate&&result.finalArrival?`${formatDateTime(result.startDate)} to ${formatDateTime(result.finalArrival)}`:'—';
+      $('scheduleWindow').textContent=result.startDate&&result.finalArrival?`${formatDateTime(result.startDate,result.startZone)} to ${formatDateTime(result.finalArrival,result.rows[result.rows.length-1]?.zone||result.startZone)}`:'—';
 
       $('scheduleBody').innerHTML=result.rows.map((row,i)=>`
         <tr>
           <td><strong>${escapeHtml(row.city)}</strong></td>
-          <td>${i===0?'Start':formatDateTime(row.arrival)}</td>
+          <td>${row.zone}</td>
+          <td>${i===0?'Start':formatDateTime(row.arrival,row.zone)}</td>
           <td>${row.breakMinutes?`${row.breakMinutes} min`:'—'}</td>
-          <td>${formatDateTime(row.departure)}</td>
+          <td>${formatDateTime(row.departure,row.zone)}</td>
           <td>${row.nextDrive?durationText(row.nextDrive):'Final stop'}</td>
           <td>${row.miles?`${Math.round(row.miles).toLocaleString()} mi`:'—'}</td>
         </tr>`).join('');
@@ -401,9 +437,10 @@
       lines.push('');
       r.rows.forEach((row,i)=>{
         lines.push(`${i+1}. ${row.city}`);
-        lines.push(`   ${i===0?'Start':'Arrive'}: ${i===0?formatDateTime(row.departure):formatDateTime(row.arrival)}`);
+        lines.push(`   Time zone: ${row.zone}`);
+        lines.push(`   ${i===0?'Start':'Arrive'}: ${i===0?formatDateTime(row.departure,row.zone):formatDateTime(row.arrival,row.zone)}`);
         if(row.breakMinutes) lines.push(`   Break: ${row.breakMinutes} minutes`);
-        if(i>0) lines.push(`   Depart: ${formatDateTime(row.departure)}${stops[i-1]?.overrideEnabled?' (override used)':''}`);
+        if(i>0) lines.push(`   Depart: ${formatDateTime(row.departure,row.zone)}${stops[i-1]?.overrideEnabled?' (manual override used)':''}`);
         if(row.nextDrive) lines.push(`   Next leg: ${durationText(row.nextDrive)} / ${Math.round(row.miles)} miles`);
         lines.push('');
       });
@@ -411,7 +448,7 @@
     }
 
     function getData(){
-      return {startCity:$('startCity').value,tripDate:$('tripDate').value,startTime:$('startTime').value,firstMiles:$('firstMiles').value,firstDriveHours:$('firstDriveHours').value,stops};
+      return {startCity:$('startCity').value,tripDate:$('tripDate').value,startTime:$('startTime').value,startTimezone:$('startTimezone').value,firstMiles:$('firstMiles').value,firstDriveHours:$('firstDriveHours').value,stops};
     }
     function autoSave(){ localStorage.setItem('travelPlannerData',JSON.stringify(getData())); }
     function load(){
@@ -420,6 +457,7 @@
       $('startCity').value=d.startCity||'';
       $('tripDate').value=d.tripDate||new Date().toISOString().slice(0,10);
       $('startTime').value=d.startTime||'08:00';
+      $('startTimezone').value=d.startTimezone||'EST';
       $('firstMiles').value=d.firstMiles||'';
       $('firstDriveHours').value=d.firstDriveHours||'';
       stops=Array.isArray(d.stops)?d.stops.map(newStop):[newStop()];
@@ -443,7 +481,7 @@
     $('clearBtn').onclick=()=>{
       if(confirm('Clear the entire travel schedule?')){
         localStorage.removeItem('travelPlannerData');
-        $('startCity').value='';$('tripDate').value=new Date().toISOString().slice(0,10);$('startTime').value='08:00';$('firstMiles').value='';$('firstDriveHours').value='';stops=[newStop()];renderStops();
+        $('startCity').value='';$('tripDate').value=new Date().toISOString().slice(0,10);$('startTime').value='08:00';$('startTimezone').value='EST';$('firstMiles').value='';$('firstDriveHours').value='';stops=[newStop()];renderStops();
       }
     };
     $('printBtn').onclick=()=>window.print();
